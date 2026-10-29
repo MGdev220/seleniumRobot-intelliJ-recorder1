@@ -13,7 +13,10 @@ import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import java.net.URI;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 
 public class SeleniumServlet extends HttpServlet {
@@ -25,7 +28,12 @@ public class SeleniumServlet extends HttpServlet {
     private volatile Editor currentTargetEditor;
     private volatile boolean initialPageLoadHandled;
     private volatile String lastPageUrl;
+    private volatile String activePageUrl;
+    private volatile String pendingPageUrl;
+    private volatile String pendingPageTitle;
     private volatile boolean actionRecordedSinceLastPageLoad;
+    private final ConcurrentMap<String, Integer> pageVisitCounts = new ConcurrentHashMap<>();
+
 
     private static final Logger LOG = Logger.getInstance(SeleniumServlet.class);
 
@@ -44,99 +52,99 @@ public class SeleniumServlet extends HttpServlet {
     public SeleniumServlet(Project project) {
         this.project = project;
         this.pageClassManager = new PageClassManager(project);
+        resetRecordingSession();
     }
 
+    public void resetRecordingSession() {
+        mainEditor = null;
+        currentTargetEditor = null;
+        lastPageUrl = null;
+        activePageUrl = null;
+        pendingPageUrl = null;
+        pendingPageTitle = null;
+        initialPageLoadHandled = false;
+        actionRecordedSinceLastPageLoad = false;
+        SELECTOR_TO_VAR.clear();
+
+        pageVisitCounts.clear();
+
+        LOG.info("[Recorder] Recording session reset");
+    }
 
     @Override
     protected void doPost(
             HttpServletRequest request,
             HttpServletResponse response
     ) throws IOException {
-        Editor selectedEditor = FileEditorManager
-                .getInstance(project)
-                .getSelectedTextEditor();
+        Editor selectedEditor = FileEditorManager.getInstance(project).getSelectedTextEditor();
 
         if (selectedEditor != null) {
             if (mainEditor == null) {
                 mainEditor = selectedEditor;
                 currentTargetEditor = selectedEditor;
-
                 LOG.info("[Recorder] Main editor initialized");
             }
-
-            SeleniumAction action = new Gson().fromJson(
-                    request.getReader(),
-                    SeleniumAction.class
-            );
+            SeleniumAction action = new Gson().fromJson(request.getReader(), SeleniumAction.class);
 
             LOG.info("[Recorder] POST /event reçu");
             LOG.info("[Recorder] COMMAND = " + action.getCommand());
 
             if ("pageLoad".equals(action.getCommand())) {
-                LOG.info("[Recorder] PAGE LOAD DETECTED");
-                LOG.info("[Recorder] Page changed reason="
-                        + action.getReason()
-                        + " url=" + action.getUrl()
-                        + " title=" + action.getTitle());
-
-                String pageUrl = action.getUrl();
-
-                boolean validUrl = pageUrl != null
-                        && !pageUrl.isBlank();
-
-                boolean newPage = validUrl
-                        && !pageUrl.equals(lastPageUrl);
-
-                if (newPage) {
-                    Editor sourceEditor = currentTargetEditor != null
-                            ? currentTargetEditor
-                            : mainEditor;
-
-                    Editor pageEditor = insertPageObject(
-                            sourceEditor,
-                            action
-                    );
-
-                    currentTargetEditor = pageEditor;
+                String pageUrl = normalizePageUrl(action.getUrl());
+                LOG.info("[Recorder] PAGE LOAD DETECTED" + " reason=" + action.getReason() + " url=" + pageUrl + " title=" + action.getTitle());
+                if (isRecordablePageUrl(pageUrl)
+                        && !pageUrl.equals(lastPageUrl)) {
+                    pendingPageUrl = pageUrl;
+                    pendingPageTitle = action.getTitle();
                     lastPageUrl = pageUrl;
-                    initialPageLoadHandled = true;
-                    actionRecordedSinceLastPageLoad = false;
 
-                    LOG.info("[Recorder] Current target editor changed"
-                            + " url=" + pageUrl);
+                    LOG.info("[Recorder] Page pending until first action" + " url=" + pendingPageUrl);
                 } else {
-                    LOG.info("[Recorder] Duplicate or invalid pageLoad ignored"
-                            + " url=" + pageUrl);
+                    LOG.info("[Recorder] pageLoad ignored" + " url=" + pageUrl);
                 }
             } else {
-                Editor targetEditor = currentTargetEditor != null
-                        ? currentTargetEditor
-                        : mainEditor;
+                String actionUrl = normalizePageUrl(action.getUrl());
 
-                if (targetEditor == null) {
-                    targetEditor = selectedEditor;
+                if (!isRecordablePageUrl(actionUrl)) {
+                    LOG.info("[Recorder] Action ignored for URL: " + actionUrl);
+                } else {
+                    boolean pageMustChange = currentTargetEditor == null || activePageUrl == null || !actionUrl.equals(activePageUrl);
+
+                    if (pageMustChange) {
+                        Editor sourceEditor = currentTargetEditor != null ? currentTargetEditor : mainEditor;
+                        if (sourceEditor == null) {
+                            sourceEditor = selectedEditor;
+                        }
+
+                        currentTargetEditor = insertPageObject(sourceEditor, action);
+                        activePageUrl = actionUrl;
+                        pendingPageUrl = null;
+                        pendingPageTitle = null;
+
+                        LOG.info("[Recorder] Active Page Object changed" + " url=" + activePageUrl + " targetEditor=" + getEditorFilePath(currentTargetEditor));
+                    }
+
+                    Editor targetEditor = currentTargetEditor != null ? currentTargetEditor : mainEditor;
+
+                    if (targetEditor == null) {
+                        targetEditor = selectedEditor;
+                    }
+
+                    currentTargetEditor = targetEditor;
+                    actionRecordedSinceLastPageLoad = true;
+
+                    if (action.getFramePath() != null) {
+                        LOG.info("[Recorder] framePath size="
+                                + action.getFramePath().size());
+                    }
+
+                    insertImports(targetEditor, action);
+                    insertElement(targetEditor, action);
+                    insertElementAction(targetEditor, action);
                 }
-
-                currentTargetEditor = targetEditor;
-                actionRecordedSinceLastPageLoad = true;
-
-                LOG.info("[Recorder] command="
-                        + action.getCommand()
-                        + " element=" + action.getElementName()
-                        + " targetEditor="
-                        + getEditorFilePath(targetEditor));
-
-                if (action.getFramePath() != null) {
-                    LOG.info("[Recorder] framePath size="
-                            + action.getFramePath().size());
-                }
-
-                insertImports(targetEditor, action);
-                insertElement(targetEditor, action);
-                insertElementAction(targetEditor, action);
             }
         } else {
-            LOG.warn("[Recorder] Aucun éditeur Java sélectionné");
+            LOG.warn("[Recorder] No Java editor selected");
         }
 
         response.setHeader("Access-Control-Allow-Origin", "*");
@@ -145,6 +153,41 @@ public class SeleniumServlet extends HttpServlet {
         response.setStatus(HttpServletResponse.SC_OK);
         response.getOutputStream().print("OK");
         response.getOutputStream().flush();
+    }
+
+    private boolean isRecordablePageUrl(String url) {
+        if (url == null || url.isBlank()) {
+            return false;
+        }
+
+        String normalizedUrl = url.toLowerCase();
+
+        return !normalizedUrl.startsWith("chrome://")
+                && !normalizedUrl.startsWith("chrome-extension://")
+                && !normalizedUrl.startsWith("edge://")
+                && !normalizedUrl.equals("about:blank")
+                && !normalizedUrl.startsWith("devtools://");
+    }
+
+    private String normalizePageUrl(String url) {
+        if (url == null || url.isBlank()) {
+            return null;
+        }
+
+        try {
+            URI uri = URI.create(url);
+
+            return new URI(
+                    uri.getScheme(),
+                    uri.getAuthority(),
+                    uri.getPath(),
+                    null,
+                    uri.getFragment()
+            ).toString();
+        } catch (Exception error) {
+            LOG.warn("[Recorder] Impossible de normaliser l'URL : " + url);
+            return url;
+        }
     }
 
     private String getEditorFilePath(Editor editor) {
@@ -172,9 +215,10 @@ public class SeleniumServlet extends HttpServlet {
         LOG.info("[Recorder] INSERT_PAGE_OBJECT CALLED");
 
         String url = action.getUrl();
+        String pageKey = normalizePageUrl(url);
 
         if (url == null || url.isBlank()) {
-            LOG.warn("[Recorder] URL de page absente");
+            LOG.warn("[Recorder] URL  page abscent");
             return sourceEditor;
         }
 
@@ -192,6 +236,10 @@ public class SeleniumServlet extends HttpServlet {
         String pageMethodName = buildPageMethodName(url, action.getTitle());
         String packageName = extractPackageName(directoryEditor.getDocument().getText());
 
+        int visitNumber = pageVisitCounts.merge(pageKey, 1, Integer::sum);
+
+        LOG.info("[Recorder] Page visit" + " url=" + url + " visitNumber=" + visitNumber);
+
         VirtualFile pageFile = pageClassManager.createOrFindPageFile(sourceDirectory, packageName, pageMethodName);
 
         if (pageFile == null) {
@@ -201,13 +249,19 @@ public class SeleniumServlet extends HttpServlet {
         pageFile.refresh(false, false);
         sourceDirectory.refresh(false, true);
 
-        Editor pageEditor = pageClassManager.openPageEditor(pageFile);
+        Editor pageEditor = pageClassManager.openPageEditor(
+                pageFile,
+                visitNumber
+        );
 
         if (pageEditor == null) {
             throw new IllegalStateException("Impossible to open " + pageFile.getPath());
         }
 
-        String methodCall = pageClassManager.buildMethodCall(pageMethodName);
+        String methodCall = pageClassManager.buildMethodCall(
+                pageMethodName,
+                visitNumber
+        );
 
         Editor scenarioEditor = mainEditor != null ? mainEditor : sourceEditor;
 
@@ -223,8 +277,7 @@ public class SeleniumServlet extends HttpServlet {
         WriteCommandAction.runWriteCommandAction(project, () -> {
                     var document = editor.getDocument();
                     if (document.getText().contains(methodCall)) {
-                        LOG.info("[Recorder] Page call already present: "
-                                + methodCall);
+                        LOG.info("[Recorder] Page call already present: " + methodCall);
                         return;
                     }
                     int caretOffset = editor.getCaretModel().getOffset();
