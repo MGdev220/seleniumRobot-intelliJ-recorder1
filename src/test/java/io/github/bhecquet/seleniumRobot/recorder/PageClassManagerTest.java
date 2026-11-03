@@ -47,7 +47,7 @@ public class PageClassManagerTest {
 
     @Test
     public void shouldBuildPageMethodCall() {
-        assertEquals("LocatorsPage.execute();", manager.buildMethodCall("locatorsPage"));
+        assertEquals("locatorsPage.execute();", manager.buildMethodCall("locatorsPage"));
     }
 
     @Test
@@ -56,7 +56,7 @@ public class PageClassManagerTest {
 
         assertTrue(result.contains("package covea.pic.jenkins.tests.selenium;"));
         assertTrue(result.contains("public class LocatorsPage"));
-        assertTrue(result.contains("public static void execute()"));
+        assertTrue(result.contains("public void execute()"));
     }
 
     @Test
@@ -64,6 +64,50 @@ public class PageClassManagerTest {
         String result = manager.buildClassContent("", "locatorsPage");
 
         assertTrue(result.startsWith("public class LocatorsPage"));
-        assertTrue(result.contains("public static void execute()"));
+        assertTrue(result.contains("public void execute()"));
+    }
+
+    @Test
+    public void shouldBuildPageInstanceDeclaration() {
+        assertEquals(
+                "LocatorsPage locatorsPage = new LocatorsPage();",
+                manager.buildInstanceDeclaration("locatorsPage")
+        );
+    }
+
+    @Test
+    public void shouldBuildMethodCallForEachVisit() {
+        assertEquals(
+                "locatorsPage.execute();",
+                manager.buildMethodCall("locatorsPage", 1)
+        );
+
+        assertEquals(
+                "locatorsPage.execute2();",
+                manager.buildMethodCall("locatorsPage", 2)
+        );
+
+        assertEquals(
+                "locatorsPage.execute3();",
+                manager.buildMethodCall("locatorsPage", 3)
+        );
+    }
+
+    @Test
+    public void shouldBuildVisitMethodName() {
+        assertEquals(
+                "execute",
+                manager.buildVisitMethodName(1)
+        );
+
+        assertEquals(
+                "execute2",
+                manager.buildVisitMethodName(2)
+        );
+
+        assertEquals(
+                "execute3",
+                manager.buildVisitMethodName(3)
+        );
     }
 }

@@ -422,7 +422,7 @@ public class SeleniumServlet extends HttpServlet {
         String pageMethodName = buildPageMethodName(url, action.getTitle());
         String packageName = extractPackageName(directoryEditor.getDocument().getText());
 
-        int visitNumber = pageVisitCounts.merge(pageKey, 1, Integer::sum);
+        int visitNumber = pageVisitCounts.merge(pageMethodName, 1, Integer::sum);
 
         LOG.info("[Recorder] Page visit" + " url=" + url + " visitNumber=" + visitNumber);
 

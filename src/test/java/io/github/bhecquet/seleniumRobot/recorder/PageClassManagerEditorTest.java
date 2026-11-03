@@ -35,7 +35,7 @@ public class PageClassManagerEditorTest extends BasePlatformTestCase {
 
         assertTrue(content.contains("package covea.pic.jenkins.tests.selenium;"));
         assertTrue(content.contains("public class LocatorsPage"));
-        assertTrue(content.contains("public static void execute()"));
+        assertTrue(content.contains("public void execute()"));
     }
 
     public void testShouldReuseExistingPageFileWithoutOverwritingIt() {
@@ -50,7 +50,7 @@ public class PageClassManagerEditorTest extends BasePlatformTestCase {
                 "src/test/java/covea/pic/jenkins/tests/selenium/LocatorsPage.java",
                 "package covea.pic.jenkins.tests.selenium;\n\n"
                         + "public class LocatorsPage {\n"
-                        + "    public static void execute() {\n"
+                        + "    public void execute() {\n"
                         + "        existingAction();\n"
                         + "    }\n"
                         + "}\n"
@@ -73,7 +73,7 @@ public class PageClassManagerEditorTest extends BasePlatformTestCase {
                 "src/test/java/covea/pic/jenkins/tests/selenium/LocatorsPage.java",
                 "package covea.pic.jenkins.tests.selenium;\n\n"
                         + "public class LocatorsPage {\n\n"
-                        + "    public static void execute() {\n"
+                        + "    public void execute() {\n"
                         + "\n"
                         + "    }\n"
                         + "}\n"
@@ -83,7 +83,7 @@ public class PageClassManagerEditorTest extends BasePlatformTestCase {
         Editor editor = manager.openPageEditor(pageFile);
         String content = editor.getDocument().getText();
         int caretOffset = editor.getCaretModel().getOffset();
-        int methodStart = content.indexOf("public static void execute()");
+        int methodStart = content.indexOf("public void execute()");
         int methodEnd = content.indexOf("}", methodStart);
 
         assertNotNull(editor);
@@ -116,7 +116,7 @@ public class PageClassManagerEditorTest extends BasePlatformTestCase {
 
     public void testShouldFindExecuteBodyOffset() {
         String content = "public class LocatorsPage {\n"
-                + "    public static void execute() {\n"
+                + "    public void execute() {\n"
                 + "        existingAction();\n"
                 + "    }\n"
                 + "}\n";
