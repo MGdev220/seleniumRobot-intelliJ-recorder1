@@ -45,13 +45,18 @@ public class PageClassManager {
     }
 
     public String buildMethodCall(String pageMethodName, int visitNumber) {
-        return buildClassName(pageMethodName) + "." + buildVisitMethodName(visitNumber) + "();";
+        return buildInstanceName(pageMethodName) + "." + buildVisitMethodName(visitNumber) + "();";
     }
 
     public String buildMethodCall(String pageMethodName) {
-        return buildClassName(pageMethodName) + ".execute();";
+        return buildInstanceName(pageMethodName) + ".execute();";
     }
 
+    public String buildInstanceDeclaration(String pageMethodName) {
+        String className = buildClassName(pageMethodName);
+        String instanceName = buildInstanceName(pageMethodName);
+        return className + " " + instanceName + " = new " + className + "();";
+    }
 
     public String buildVisitMethodName(int visitNumber) {
         if (visitNumber <= 1) {
@@ -64,16 +69,11 @@ public class PageClassManager {
 
     public String buildClassContent(String packageName, String pageMethodName) {
         String className = buildClassName(pageMethodName);
-        String packageDeclaration = packageName == null || packageName.isBlank()
-                ? ""
-                : "package " + packageName + ";\n\n";
-
+        String packageDeclaration = packageName == null || packageName.isBlank() ? "" : "package " + packageName + ";\n\n";
         return packageDeclaration
-                + "public class " + className + " {\n\n"
-                + "    public static void execute() {\n\n"
-                + "    }\n"
-                + "}\n";
+                + "public class " + className + " {\n\n" + "    public " + className + "() {\n" + "    }\n\n" + "    public void execute() {\n\n" + "    }\n" + "}\n";
     }
+
 
     public VirtualFile createOrFindPageFile(
             VirtualFile sourceDirectory,
@@ -225,7 +225,7 @@ public class PageClassManager {
             throw new IllegalArgumentException(" Java content is empty");
         }
 
-        String signature = "public static void " + methodName + "()";
+        String signature = "public void " + methodName + "()";
         int methodStart = content.indexOf(signature);
 
         if (methodStart < 0) {
@@ -275,40 +275,23 @@ public class PageClassManager {
                                     + pageFile.getName()
                     );
                 }
+                String content = document.getText();
 
-                String signature =
-                        "public static void "
-                                + methodName
-                                + "()";
+                String signature = "public void " + methodName + "()";
 
-                if (document.getText().contains(signature)) {
+                if (content.contains(signature)) {
                     return;
                 }
 
-                int classClosingBrace =
-                        document.getText().lastIndexOf('}');
+                int classClosingBrace = document.getText().lastIndexOf('}');
 
                 if (classClosingBrace < 0) {
-                    throw new IllegalStateException(
-                            "La classe Java est invalide : "
-                                    + pageFile.getName()
+                    throw new IllegalStateException("Java class is invalid : " + pageFile.getName()
                     );
                 }
 
-                String newMethod =
-                        "\n"
-                                + "    public static void "
-                                + methodName
-                                + "() {\n"
-                                + "\n"
-                                + "    }\n";
-
-                WriteCommandAction.runWriteCommandAction(
-                        project,
-                        () -> document.insertString(
-                                classClosingBrace,
-                                newMethod
-                        )
+                String newMethod = "\n" + "    public void " + methodName + "() {\n" + "\n" + "    }\n";
+                WriteCommandAction.runWriteCommandAction(project, () -> document.insertString(classClosingBrace, newMethod)
                 );
 
                 LOG.info("[Recorder] Méthode créée : " + methodName + "() dans " + pageFile.getPath()
@@ -318,32 +301,22 @@ public class PageClassManager {
             }
         };
 
-        if (ApplicationManager
-                .getApplication()
-                .isDispatchThread()) {
+        if (ApplicationManager.getApplication().isDispatchThread()) {
             creationTask.run();
         } else {
-            ApplicationManager
-                    .getApplication()
+            ApplicationManager.getApplication()
                     .invokeAndWait(creationTask);
         }
 
         if (creationError.get() != null) {
             throw new IllegalStateException(
-                    "Impossible de créer la méthode "
-                            + methodName
-                            + " dans "
-                            + pageFile.getName(),
-                    creationError.get()
+                    "Impossible to create method " + methodName + " in " + pageFile.getName(), creationError.get()
             );
         }
     }
 
     private String readFileContent(VirtualFile file) {
-        Document document = FileDocumentManager
-                .getInstance()
-                .getDocument(file);
-
+        Document document = FileDocumentManager.getInstance().getDocument(file);
         if (document != null) {
             return document.getText();
         }
@@ -352,13 +325,17 @@ public class PageClassManager {
             return VfsUtilCore.loadText(file);
         } catch (IOException error) {
             throw new IllegalStateException(
-                    "Impossible de lire " + file.getName(),
+                    "Impossible to read " + file.getName(),
                     error
             );
         }
     }
 
-    public Project getProject() {
-        return project;
+    public String buildInstanceName(String pageMethodName) {
+        String className = buildClassName(pageMethodName);
+
+        return Character.toLowerCase(className.charAt(0))
+                + className.substring(1);
     }
+
 }

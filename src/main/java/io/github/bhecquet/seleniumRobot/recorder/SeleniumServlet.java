@@ -1,12 +1,14 @@
 package io.github.bhecquet.seleniumRobot.recorder;
 
 import com.google.gson.Gson;
+import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.command.WriteCommandAction;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.editor.Editor;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.fileEditor.FileEditorManager;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.util.text.StringUtil;
 import com.intellij.openapi.vfs.VirtualFile;
 
 import javax.servlet.http.HttpServlet;
@@ -17,6 +19,7 @@ import java.net.URI;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicReference;
 
 
 public class SeleniumServlet extends HttpServlet {
@@ -33,6 +36,7 @@ public class SeleniumServlet extends HttpServlet {
     private volatile String pendingPageTitle;
     private volatile boolean actionRecordedSinceLastPageLoad;
     private final ConcurrentMap<String, Integer> pageVisitCounts = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, String> pageClassToVariable = new ConcurrentHashMap<>();
 
 
     private static final Logger LOG = Logger.getInstance(SeleniumServlet.class);
@@ -43,11 +47,6 @@ public class SeleniumServlet extends HttpServlet {
     private String keyFor(String selectorLiteral, String frameVarOrNull) {
         return (frameVarOrNull == null ? "_" : frameVarOrNull) + "|" + selectorLiteral.trim();
     }
-
-    private String getText(Editor editor) {
-        return editor.getDocument().getText();
-    }
-
 
     public SeleniumServlet(Project project) {
         this.project = project;
@@ -67,6 +66,7 @@ public class SeleniumServlet extends HttpServlet {
         SELECTOR_TO_VAR.clear();
 
         pageVisitCounts.clear();
+        pageClassToVariable.clear();
 
         LOG.info("[Recorder] Recording session reset");
     }
@@ -76,32 +76,41 @@ public class SeleniumServlet extends HttpServlet {
             HttpServletRequest request,
             HttpServletResponse response
     ) throws IOException {
-        Editor selectedEditor = FileEditorManager.getInstance(project).getSelectedTextEditor();
+        Editor selectedEditor = FileEditorManager
+                .getInstance(project)
+                .getSelectedTextEditor();
 
         if (selectedEditor != null) {
             if (mainEditor == null) {
                 mainEditor = selectedEditor;
                 currentTargetEditor = selectedEditor;
-                LOG.info("[Recorder] Main editor initialized");
+                LOG.info("[Recorder] Main editor initialized: " + getEditorFilePath(mainEditor));
             }
-            SeleniumAction action = new Gson().fromJson(request.getReader(), SeleniumAction.class);
 
+            SeleniumAction action = new Gson().fromJson(request.getReader(), SeleniumAction.class);
             LOG.info("[Recorder] POST /event reçu");
             LOG.info("[Recorder] COMMAND = " + action.getCommand());
 
             if ("pageLoad".equals(action.getCommand())) {
                 String pageUrl = normalizePageUrl(action.getUrl());
+
                 LOG.info("[Recorder] PAGE LOAD DETECTED" + " reason=" + action.getReason() + " url=" + pageUrl + " title=" + action.getTitle());
-                if (isRecordablePageUrl(pageUrl)
-                        && !pageUrl.equals(lastPageUrl)) {
+
+                if (isRecordablePageUrl(pageUrl) && !pageUrl.equals(lastPageUrl)) {
                     pendingPageUrl = pageUrl;
                     pendingPageTitle = action.getTitle();
                     lastPageUrl = pageUrl;
 
-                    LOG.info("[Recorder] Page pending until first action" + " url=" + pendingPageUrl);
+                    LOG.info("[Recorder] Page pending until first action" + " url=" + pendingPageUrl
+                    );
                 } else {
-                    LOG.info("[Recorder] pageLoad ignored" + " url=" + pageUrl);
+                    LOG.info("[Recorder] pageLoad ignored" + " url=" + pageUrl
+                    );
                 }
+
+            } else if (!isRecordableAction(action)) {
+                LOG.info("[Recorder] Technical command ignored: " + action.getCommand());
+
             } else {
                 String actionUrl = normalizePageUrl(action.getUrl());
 
@@ -109,9 +118,9 @@ public class SeleniumServlet extends HttpServlet {
                     LOG.info("[Recorder] Action ignored for URL: " + actionUrl);
                 } else {
                     boolean pageMustChange = currentTargetEditor == null || activePageUrl == null || !actionUrl.equals(activePageUrl);
-
                     if (pageMustChange) {
                         Editor sourceEditor = currentTargetEditor != null ? currentTargetEditor : mainEditor;
+
                         if (sourceEditor == null) {
                             sourceEditor = selectedEditor;
                         }
@@ -125,7 +134,6 @@ public class SeleniumServlet extends HttpServlet {
                     }
 
                     Editor targetEditor = currentTargetEditor != null ? currentTargetEditor : mainEditor;
-
                     if (targetEditor == null) {
                         targetEditor = selectedEditor;
                     }
@@ -133,9 +141,10 @@ public class SeleniumServlet extends HttpServlet {
                     currentTargetEditor = targetEditor;
                     actionRecordedSinceLastPageLoad = true;
 
+                    LOG.info("[Recorder] command=" + action.getCommand() + " element=" + action.getElementName() + " url=" + actionUrl + " targetEditor=" + getEditorFilePath(targetEditor));
+
                     if (action.getFramePath() != null) {
-                        LOG.info("[Recorder] framePath size="
-                                + action.getFramePath().size());
+                        LOG.info("[Recorder] framePath size=" + action.getFramePath().size());
                     }
 
                     insertImports(targetEditor, action);
@@ -147,10 +156,21 @@ public class SeleniumServlet extends HttpServlet {
             LOG.warn("[Recorder] No Java editor selected");
         }
 
-        response.setHeader("Access-Control-Allow-Origin", "*");
-        response.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
-        response.setHeader("Access-Control-Allow-Headers", "Content-Type");
-        response.setStatus(HttpServletResponse.SC_OK);
+        response.setHeader(
+                "Access-Control-Allow-Origin",
+                "*"
+        );
+        response.setHeader(
+                "Access-Control-Allow-Methods",
+                "POST, GET, OPTIONS"
+        );
+        response.setHeader(
+                "Access-Control-Allow-Headers",
+                "Content-Type"
+        );
+        response.setStatus(
+                HttpServletResponse.SC_OK
+        );
         response.getOutputStream().print("OK");
         response.getOutputStream().flush();
     }
@@ -169,6 +189,61 @@ public class SeleniumServlet extends HttpServlet {
                 && !normalizedUrl.startsWith("devtools://");
     }
 
+    private boolean isRecordableAction(
+            SeleniumAction action
+    ) {
+        if (action == null || action.getCommand() == null) {
+            return false;
+        }
+
+        String command = action.getCommand();
+        String elementType = action.getElementType();
+        String value = action.getValue();
+
+        boolean typingCommand =
+                "type".equals(command)
+                        || "sendKeys".equals(command)
+                        || "keyup".equals(command)
+                        || "keydown".equals(command);
+
+        if (typingCommand
+                && (value == null || value.isEmpty())) {
+            return false;
+        }
+
+        boolean selectElement =
+                "SelectElement".equals(elementType)
+                        || "SelectList".equals(elementType);
+
+        if (selectElement
+                && ("click".equals(command)
+                || "change".equals(command))) {
+            return false;
+        }
+
+        return switch (command) {
+            case "click",
+                 "dblclick",
+                 "doubleClick",
+                 "contextmenu",
+                 "type",
+                 "sendKeys",
+                 "keyup",
+                 "keydown",
+                 "check",
+                 "uncheck",
+                 "select",
+                 "change",
+                 "removeSelection",
+                 "clickAt",
+                 "submit",
+                 "dragAndDropToObject",
+                 "verify" -> true;
+
+            default -> false;
+        };
+    }
+
     private String normalizePageUrl(String url) {
         if (url == null || url.isBlank()) {
             return null;
@@ -176,14 +251,24 @@ public class SeleniumServlet extends HttpServlet {
 
         try {
             URI uri = URI.create(url);
+            String path = uri.getPath();
+
+            if (path == null || path.isBlank()) {
+                path = "/";
+            }
+
+            if (path.length() > 1 && path.endsWith("/")) {
+                path = path.substring(0, path.length() - 1);
+            }
 
             return new URI(
                     uri.getScheme(),
                     uri.getAuthority(),
-                    uri.getPath(),
+                    path,
                     null,
-                    uri.getFragment()
+                    null
             ).toString();
+
         } catch (Exception error) {
             LOG.warn("[Recorder] Impossible de normaliser l'URL : " + url);
             return url;
@@ -207,6 +292,109 @@ public class SeleniumServlet extends HttpServlet {
         return matcher.find(searchStart) ? matcher.start() : -1;
     }
 
+    private void updateMainFile(
+            Editor scenarioEditor,
+            String pageMethodName,
+            int visitNumber
+    ) {
+        if (scenarioEditor == null) {
+            throw new IllegalStateException(
+                    "L'éditeur de Main.java est absent"
+            );
+        }
+
+        var document = scenarioEditor.getDocument();
+
+        String declaration = pageClassManager.buildInstanceDeclaration(pageMethodName);
+        String methodCall = pageClassManager.buildMethodCall(pageMethodName, visitNumber);
+
+        AtomicReference<Throwable> updateError =
+                new AtomicReference<>();
+
+        Runnable updateTask = () -> {
+            try {
+                WriteCommandAction.runWriteCommandAction(
+                        project, () -> {
+                            String currentSource = document.getText();
+
+                            String updatedSource = addPageToMainSource(currentSource, declaration, methodCall);
+
+                            updatedSource = StringUtil.convertLineSeparators(updatedSource, "\n");
+
+                            if (!updatedSource.equals(currentSource)) {
+                                document.setText(updatedSource);
+                            }
+
+                            LOG.info("[Recorder] Main.java updated: " + declaration + " / " + methodCall);
+                        }
+                );
+            } catch (Throwable error) {
+                updateError.set(error);
+            }
+        };
+
+        if (ApplicationManager.getApplication().isDispatchThread()) {
+            updateTask.run();
+        } else {
+            ApplicationManager.getApplication().invokeAndWait(updateTask);
+        }
+
+        if (updateError.get() != null) {
+            throw new IllegalStateException("Impossible de mettre à jour Main.java" + " avec " + declaration + " et " + methodCall,
+                    updateError.get()
+            );
+        }
+    }
+
+    private String addPageToMainSource(
+            String source,
+            String declaration,
+            String methodCall
+    ) {
+        int mainStart = source.indexOf("public static void main");
+
+        if (mainStart < 0) {
+            throw new IllegalStateException(
+                    "La méthode main() est absente"
+            );
+        }
+
+        int mainOpeningBrace = source.indexOf('{', mainStart);
+
+        if (mainOpeningBrace < 0) {
+            throw new IllegalStateException(
+                    "Le corps de main() est invalide"
+            );
+        }
+
+        int mainClosingBrace = findClosingBrace(source, mainOpeningBrace);
+
+        String mainBody = source.substring(mainOpeningBrace + 1, mainClosingBrace);
+        StringBuilder contentToInsert = new StringBuilder();
+
+        if (!mainBody.contains(declaration)) {
+            contentToInsert
+                    .append(System.lineSeparator())
+                    .append("        ")
+                    .append(declaration)
+                    .append(System.lineSeparator());
+        }
+
+        if (!mainBody.contains(methodCall)) {
+            contentToInsert
+                    .append("        ")
+                    .append(methodCall)
+                    .append(System.lineSeparator());
+        }
+
+        if (contentToInsert.isEmpty()) {
+            return source;
+        }
+
+        return source.substring(0, mainClosingBrace)
+                + contentToInsert
+                + source.substring(mainClosingBrace);
+    }
 
     private Editor insertPageObject(
             Editor sourceEditor,
@@ -222,9 +410,7 @@ public class SeleniumServlet extends HttpServlet {
             return sourceEditor;
         }
 
-        Editor directoryEditor = mainEditor != null
-                ? mainEditor
-                : sourceEditor;
+        Editor directoryEditor = mainEditor != null ? mainEditor : sourceEditor;
 
         VirtualFile sourceFile = FileDocumentManager.getInstance().getFile(directoryEditor.getDocument());
 
@@ -241,51 +427,62 @@ public class SeleniumServlet extends HttpServlet {
         LOG.info("[Recorder] Page visit" + " url=" + url + " visitNumber=" + visitNumber);
 
         VirtualFile pageFile = pageClassManager.createOrFindPageFile(sourceDirectory, packageName, pageMethodName);
-
         if (pageFile == null) {
-            throw new IllegalStateException(" Page Object not created for " + pageMethodName);
+            throw new IllegalStateException("Page Object non créé pour " + pageMethodName);
         }
 
         pageFile.refresh(false, false);
         sourceDirectory.refresh(false, true);
-
-        Editor pageEditor = pageClassManager.openPageEditor(
-                pageFile,
-                visitNumber
-        );
-
-        if (pageEditor == null) {
-            throw new IllegalStateException("Impossible to open " + pageFile.getPath());
-        }
-
-        String methodCall = pageClassManager.buildMethodCall(
-                pageMethodName,
-                visitNumber
-        );
-
         Editor scenarioEditor = mainEditor != null ? mainEditor : sourceEditor;
 
-        insertPageObjectCall(scenarioEditor, methodCall);
+        LOG.info("[Recorder] Tentative de mise à jour du Main" + " editor=" + getEditorFilePath(scenarioEditor) + " page=" + pageMethodName + " visit=" + visitNumber);
+
+        try {
+            updateMainFile(scenarioEditor, pageMethodName, visitNumber);
+            LOG.info("[Recorder] Mise à jour du Main terminée" + " editor=" + getEditorFilePath(scenarioEditor));
+        } catch (RuntimeException error) {
+            LOG.error(
+                    "[Recorder] Impossible de mettre à jour Main.java" + " editor=" + getEditorFilePath(scenarioEditor)
+                            + " page=" + pageMethodName
+                            + " visit=" + visitNumber
+                            + " message=" + error.getMessage(),
+                    error
+            );
+        }
+
+        Editor pageEditor = pageClassManager.openPageEditor(pageFile, visitNumber);
+
+        if (pageEditor == null) {
+            throw new IllegalStateException("Impossible d'ouvrir " + pageFile.getPath());
+        }
 
         return pageEditor;
+
+
     }
 
-    private void insertPageObjectCall(
-            Editor editor,
-            String methodCall
-    ) {
-        WriteCommandAction.runWriteCommandAction(project, () -> {
-                    var document = editor.getDocument();
-                    if (document.getText().contains(methodCall)) {
-                        LOG.info("[Recorder] Page call already present: " + methodCall);
-                        return;
-                    }
-                    int caretOffset = editor.getCaretModel().getOffset();
-                    String code = "\t\t" + methodCall + "\n";
-                    document.insertString(caretOffset, code);
-                    editor.getCaretModel().moveToOffset(caretOffset + code.length()
-                    );
+    private int findClosingBrace(String text, int openingBrace) {
+        int depth = 0;
+
+        for (int index = openingBrace;
+             index < text.length();
+             index++) {
+
+            char character = text.charAt(index);
+
+            if (character == '{') {
+                depth++;
+            } else if (character == '}') {
+                depth--;
+
+                if (depth == 0) {
+                    return index;
                 }
+            }
+        }
+
+        throw new IllegalStateException(
+                "L'accolade fermante de main() est absente"
         );
     }
 
@@ -376,20 +573,6 @@ public class SeleniumServlet extends HttpServlet {
         }
 
         return methodName.toString();
-    }
-
-
-    private boolean containsMethod(
-            String text,
-            String methodName
-    ) {
-        String pattern = "(?m)^\\s*" + "(public|protected|private)" + "\\s+static\\s+void\\s+" + java.util.regex.Pattern.quote(methodName)
-                + "\\s*\\(";
-
-        return java.util.regex.Pattern
-                .compile(pattern)
-                .matcher(text)
-                .find();
     }
 
     private String insertElement(Editor editor, SeleniumAction seleniumAction) {
@@ -682,7 +865,7 @@ public class SeleniumServlet extends HttpServlet {
             String elementNameUsed = initialVar;
             if (declaredName != null && !declaredName.equals(initialVar)) {
                 code = code.replace(initialVar + ".", declaredName + ".");
-                elementNameUsed = declaredName;   // ← IMPORTANT
+                elementNameUsed = declaredName;
             }
 
 
